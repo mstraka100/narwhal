@@ -20,7 +20,7 @@ use multiaddr::{Multiaddr, Protocol};
 use network::metrics::MetricsMakeCallbackHandler;
 use network::P2pNetwork;
 use primary::PrimaryWorkerMessage;
-use std::{net::Ipv4Addr, sync::Arc};
+use std::{net::Ipv4Addr, str::from_utf8_unchecked_mut, sync::Arc};
 use store::Store;
 use tokio::{sync::watch, task::JoinHandle};
 use tonic::{Request, Response, Status};
@@ -29,8 +29,9 @@ use tracing::info;
 use types::{
     error::DagError,
     metered_channel::{channel, Receiver, Sender},
-    Batch, BatchDigest, Empty, PrimaryToWorkerServer, ReconfigureNotification, Transaction,
-    TransactionProto, Transactions, TransactionsServer, WorkerPrimaryMessage, WorkerToWorkerServer,
+    Batch, BatchDigest, Empty, PrimaryToWorkerServer, ReconfigureNotification,
+    StateRootTransactionProto, Transaction, TransactionProto, Transactions, TransactionsServer,
+    WorkerPrimaryMessage, WorkerToWorkerServer,
 };
 
 #[cfg(test)]
@@ -422,6 +423,28 @@ impl Transactions for TxReceiverHandler {
         request: Request<TransactionProto>,
     ) -> Result<Response<Empty>, Status> {
         let message = request.into_inner().transaction;
+        let data = message.to_vec();
+        let str: String = bincode::deserialize(&data).unwrap();
+        println!("Got a tx {}", str);
+        // Send the transaction to the batch maker.
+        self.tx_batch_maker
+            .send(message.to_vec())
+            .await
+            .map_err(|_| DagError::ShuttingDown)
+            .map_err(|e| Status::not_found(e.to_string()))?;
+
+        Ok(Response::new(Empty {}))
+    }
+
+    // TODO (michael) Figure out what to do with signature data in request
+    async fn submit_state_root_transaction(
+        &self,
+        request: Request<StateRootTransactionProto>,
+    ) -> Result<Response<Empty>, Status> {
+        let message = request.into_inner().state_root;
+        let data = message.to_vec();
+        let str: String = bincode::deserialize(&data).unwrap();
+        println!("Got a tx {}", str);
         // Send the transaction to the batch maker.
         self.tx_batch_maker
             .send(message.to_vec())
@@ -439,6 +462,9 @@ impl Transactions for TxReceiverHandler {
         let mut transactions = request.into_inner();
 
         while let Some(Ok(txn)) = transactions.next().await {
+            let data = txn.transaction.to_vec();
+            let str: String = bincode::deserialize(&data).unwrap();
+            println!("Got a streamed tx {}", str);
             // Send the transaction to the batch maker.
             self.tx_batch_maker
                 .send(txn.transaction.to_vec())
